@@ -1406,6 +1406,7 @@ namespace MCPForUnity.Editor.Tools
                     Type componentType = FindType(searchTerm);
                     if (componentType != null)
                     {
+#if UNITY_2023_1_OR_NEWER
                         // Determine FindObjectsInactive based on the searchInactive flag
                         FindObjectsInactive findInactive = searchInactive
                             ? FindObjectsInactive.Include
@@ -1422,6 +1423,16 @@ namespace MCPForUnity.Editor.Tools
                                     FindObjectsSortMode.None
                                 )
                                 .Select(c => (c as Component).gameObject);
+#else
+                        // For Unity versions prior to 2023.1, use the deprecated FindObjectsOfType
+                        var searchPoolComp = rootSearchObject
+                            ? rootSearchObject
+                                .GetComponentsInChildren(componentType, searchInactive)
+                                .Select(c => (c as Component).gameObject)
+                            : UnityEngine
+                                .Object.FindObjectsOfType(componentType, searchInactive)
+                                .Select(c => (c as Component).gameObject);
+#endif
                         results.AddRange(searchPoolComp.Where(go => go != null)); // Ensure GO is valid
                     }
                     else
