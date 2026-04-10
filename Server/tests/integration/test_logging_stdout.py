@@ -5,10 +5,9 @@ import pytest
 
 
 # locate server src dynamically to avoid hardcoded layout assumptions
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]  # tests/integration -> tests -> Server
 candidates = [
-    ROOT / "MCPForUnity" / "UnityMcpServer~" / "src",
-    ROOT / "UnityMcpServer~" / "src",
+    ROOT / "src",
 ]
 SRC = next((p for p in candidates if p.exists()), None)
 if SRC is None:
@@ -19,13 +18,12 @@ if SRC is None:
     )
 
 
-@pytest.mark.skip(reason="TODO: ensure server logs only to stderr and rotating file")
-def test_no_stdout_output_from_tools():
-    pass
-
-
 def test_no_print_statements_in_codebase():
     """Ensure no stray print/sys.stdout writes remain in server source."""
+    # CLI tools that intentionally print to stdout
+    ALLOWED_PRINT_FILES = {
+        Path("scene_generator") / "test_pipeline.py",
+    }
     offenders = []
     syntax_errors = []
     for py_file in SRC.rglob("*.py"):
@@ -62,8 +60,9 @@ def test_no_print_statements_in_codebase():
 
         v = StdoutVisitor()
         v.visit(tree)
-        if v.hit:
-            offenders.append(py_file.relative_to(SRC))
+        rel_path = py_file.relative_to(SRC)
+        if v.hit and rel_path not in ALLOWED_PRINT_FILES:
+            offenders.append(rel_path)
     assert not syntax_errors, "syntax errors in: " + \
         ", ".join(str(e) for e in syntax_errors)
     assert not offenders, "stdout writes found in: " + \

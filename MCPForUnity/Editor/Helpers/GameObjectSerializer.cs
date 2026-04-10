@@ -2,11 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using MCPForUnity.Runtime.Serialization; // For Converters
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
-using MCPForUnity.Runtime.Serialization; // For Converters
 
 namespace MCPForUnity.Editor.Helpers
 {
@@ -115,6 +115,48 @@ namespace MCPForUnity.Editor.Helpers
         // --- End Metadata Caching ---
 
         /// <summary>
+        /// Checks if a type is or derives from a type with the specified full name.
+        /// Used to detect special-case components including their subclasses.
+        /// </summary>
+        private static bool IsOrDerivedFrom(Type type, string baseTypeFullName)
+        {
+            Type current = type;
+            while (current != null)
+            {
+                if (current.FullName == baseTypeFullName)
+                    return true;
+                current = current.BaseType;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Serializes a UnityEngine.Object reference to a dictionary with name, instanceID, and assetPath.
+        /// Used for consistent serialization of asset references in special-case component handlers.
+        /// </summary>
+        /// <param name="obj">The Unity object to serialize</param>
+        /// <param name="includeAssetPath">Whether to include the asset path (default true)</param>
+        /// <returns>A dictionary with the object's reference info, or null if obj is null</returns>
+        private static Dictionary<string, object> SerializeAssetReference(UnityEngine.Object obj, bool includeAssetPath = true)
+        {
+            if (obj == null) return null;
+            
+            var result = new Dictionary<string, object>
+            {
+                { "name", obj.name },
+                { "instanceID", obj.GetInstanceID() }
+            };
+            
+            if (includeAssetPath)
+            {
+                var assetPath = AssetDatabase.GetAssetPath(obj);
+                result["assetPath"] = string.IsNullOrEmpty(assetPath) ? null : assetPath;
+            }
+            
+            return result;
+        }
+
+        /// <summary>
         /// Creates a serializable representation of a Component, attempting to serialize
         /// public properties and fields using reflection, with caching and control over non-public fields.
         /// </summary>
@@ -122,7 +164,7 @@ namespace MCPForUnity.Editor.Helpers
         public static object GetComponentData(Component c, bool includeNonPublicSerializedFields = true)
         {
             // --- Add Early Logging --- 
-            // Debug.Log($"[GetComponentData] Starting for component: {c?.GetType()?.FullName ?? "null"} (ID: {c?.GetInstanceID() ?? 0})");
+            // McpLog.Info($"[GetComponentData] Starting for component: {c?.GetType()?.FullName ?? "null"} (ID: {c?.GetInstanceID() ?? 0})");
             // --- End Early Logging ---
 
             if (c == null) return null;
@@ -132,7 +174,7 @@ namespace MCPForUnity.Editor.Helpers
             if (componentType == typeof(Transform))
             {
                 Transform tr = c as Transform;
-                // Debug.Log($"[GetComponentData] Manually serializing Transform (ID: {tr.GetInstanceID()})");
+                // McpLog.Info($"[GetComponentData] Manually serializing Transform (ID: {tr.GetInstanceID()})");
                 return new Dictionary<string, object>
                 {
                     { "typeName", componentType.FullName },
@@ -220,6 +262,72 @@ namespace MCPForUnity.Editor.Helpers
             }
             // --- End Special handling for Camera ---
 
+            // --- Special handling for UIDocument to avoid infinite loops from VisualElement hierarchy (Issue #585) ---
+            // UIDocument.rootVisualElement contains circular parent/child references that cause infinite serialization loops.
+            // Use IsOrDerivedFrom to also catch subclasses of UIDocument.
+            if (IsOrDerivedFrom(componentType, "UnityEngine.UIElements.UIDocument"))
+            {
+                var uiDocProperties = new Dictionary<string, object>();
+
+                try
+                {
+                    // Get panelSettings reference safely
+                    var panelSettingsProp = componentType.GetProperty("panelSettings");
+                    if (panelSettingsProp != null)
+                    {
+                        var panelSettings = panelSettingsProp.GetValue(c) as UnityEngine.Object;
+                        uiDocProperties["panelSettings"] = SerializeAssetReference(panelSettings);
+                    }
+
+                    // Get visualTreeAsset reference safely (the UXML file)
+                    var visualTreeAssetProp = componentType.GetProperty("visualTreeAsset");
+                    if (visualTreeAssetProp != null)
+                    {
+                        var visualTreeAsset = visualTreeAssetProp.GetValue(c) as UnityEngine.Object;
+                        uiDocProperties["visualTreeAsset"] = SerializeAssetReference(visualTreeAsset);
+                    }
+
+                    // Get sortingOrder safely
+                    var sortingOrderProp = componentType.GetProperty("sortingOrder");
+                    if (sortingOrderProp != null)
+                    {
+                        uiDocProperties["sortingOrder"] = sortingOrderProp.GetValue(c);
+                    }
+
+                    // Get enabled state (from Behaviour base class)
+                    var enabledProp = componentType.GetProperty("enabled");
+                    if (enabledProp != null)
+                    {
+                        uiDocProperties["enabled"] = enabledProp.GetValue(c);
+                    }
+
+                    // Get parentUI reference safely (no asset path needed - it's a scene reference)
+                    var parentUIProp = componentType.GetProperty("parentUI");
+                    if (parentUIProp != null)
+                    {
+                        var parentUI = parentUIProp.GetValue(c) as UnityEngine.Object;
+                        uiDocProperties["parentUI"] = SerializeAssetReference(parentUI, includeAssetPath: false);
+                    }
+
+                    // NOTE: rootVisualElement is intentionally skipped - it contains circular
+                    // parent/child references that cause infinite serialization loops
+                    uiDocProperties["_note"] = "rootVisualElement skipped to prevent circular reference loops";
+                }
+                catch (Exception e)
+                {
+                    McpLog.Warn($"[GetComponentData] Error reading UIDocument properties: {e.Message}");
+                }
+
+                // Return structure matches Camera special handling (typeName, instanceID, properties)
+                return new Dictionary<string, object>
+                {
+                    { "typeName", componentType.FullName },
+                    { "instanceID", c.GetInstanceID() },
+                    { "properties", uiDocProperties }
+                };
+            }
+            // --- End Special handling for UIDocument ---
+
             var data = new Dictionary<string, object>
             {
                 { "typeName", componentType.FullName },
@@ -255,25 +363,25 @@ namespace MCPForUnity.Editor.Helpers
                     var declaredFields = currentType.GetFields(fieldFlags);
 
                     // Process the declared Fields for caching
-                foreach (var fieldInfo in declaredFields)
+                    foreach (var fieldInfo in declaredFields)
                     {
                         if (fieldInfo.Name.EndsWith("k__BackingField")) continue; // Skip backing fields
 
                         // Add if not already added (handles hiding - keep the most derived version)
                         if (fieldsToCache.Any(f => f.Name == fieldInfo.Name)) continue;
 
-                    bool shouldInclude = false;
-                    if (includeNonPublicSerializedFields)
-                    {
-                        // If TRUE, include Public OR any NonPublic with [SerializeField] (private/protected/internal)
-                        var hasSerializeField = fieldInfo.IsDefined(typeof(SerializeField), inherit: true);
-                        shouldInclude = fieldInfo.IsPublic || (!fieldInfo.IsPublic && hasSerializeField);
-                    }
-                    else // includeNonPublicSerializedFields is FALSE
-                    {
-                        // If FALSE, include ONLY if it is explicitly Public.
-                        shouldInclude = fieldInfo.IsPublic;
-                    }
+                        bool shouldInclude = false;
+                        if (includeNonPublicSerializedFields)
+                        {
+                            // If TRUE, include Public OR any NonPublic with [SerializeField] (private/protected/internal)
+                            var hasSerializeField = fieldInfo.IsDefined(typeof(SerializeField), inherit: true);
+                            shouldInclude = fieldInfo.IsPublic || (!fieldInfo.IsPublic && hasSerializeField);
+                        }
+                        else // includeNonPublicSerializedFields is FALSE
+                        {
+                            // If FALSE, include ONLY if it is explicitly Public.
+                            shouldInclude = fieldInfo.IsPublic;
+                        }
 
                         if (shouldInclude)
                         {
@@ -295,7 +403,7 @@ namespace MCPForUnity.Editor.Helpers
             var serializablePropertiesOutput = new Dictionary<string, object>();
 
             // --- Add Logging Before Property Loop ---
-            // Debug.Log($"[GetComponentData] Starting property loop for {componentType.Name}...");
+            // McpLog.Info($"[GetComponentData] Starting property loop for {componentType.Name}...");
             // --- End Logging Before Property Loop ---
 
             // Use cached properties
@@ -313,7 +421,7 @@ namespace MCPForUnity.Editor.Helpers
                     // Also skip potentially problematic Matrix properties prone to cycles/errors
                     propName == "worldToLocalMatrix" || propName == "localToWorldMatrix")
                 {
-                    // Debug.Log($"[GetComponentData] Explicitly skipping generic property: {propName}"); // Optional log
+                    // McpLog.Info($"[GetComponentData] Explicitly skipping generic property: {propName}"); // Optional log
                     skipProperty = true;
                 }
                 // --- End Skip Generic Properties ---
@@ -330,7 +438,7 @@ namespace MCPForUnity.Editor.Helpers
                      propName == "previousViewProjectionMatrix" ||
                      propName == "cameraToWorldMatrix"))
                 {
-                    // Debug.Log($"[GetComponentData] Explicitly skipping Camera property: {propName}");
+                    // McpLog.Info($"[GetComponentData] Explicitly skipping Camera property: {propName}");
                     skipProperty = true;
                 }
                 // --- End Skip Camera Properties ---
@@ -342,10 +450,17 @@ namespace MCPForUnity.Editor.Helpers
                      propName == "worldToLocalMatrix" ||
                      propName == "localToWorldMatrix"))
                 {
-                    // Debug.Log($"[GetComponentData] Explicitly skipping Transform property: {propName}");
                     skipProperty = true;
                 }
                 // --- End Skip Transform Properties ---
+
+                // --- Skip Collider properties that cause native crashes via PhysX ---
+                if (typeof(Collider).IsAssignableFrom(componentType) &&
+                    propName == "GeometryHolder")
+                {
+                    skipProperty = true;
+                }
+                // --- End Skip Collider Properties ---
 
                 // Skip if flagged
                 if (skipProperty)
@@ -356,9 +471,9 @@ namespace MCPForUnity.Editor.Helpers
                 try
                 {
                     // --- Add detailed logging --- 
-                    // Debug.Log($"[GetComponentData] Accessing: {componentType.Name}.{propName}");
+                    // McpLog.Info($"[GetComponentData] Accessing: {componentType.Name}.{propName}");
                     // --- End detailed logging ---
-                    
+
                     // --- Special handling for material/mesh properties in edit mode ---
                     object value;
                     if (!Application.isPlaying && (propName == "material" || propName == "materials" || propName == "mesh"))
@@ -386,18 +501,18 @@ namespace MCPForUnity.Editor.Helpers
                         value = propInfo.GetValue(c);
                     }
                     // --- End special handling ---
-                    
+
                     Type propType = propInfo.PropertyType;
                     AddSerializableValue(serializablePropertiesOutput, propName, propType, value);
                 }
                 catch (Exception)
                 {
-                    // Debug.LogWarning($"Could not read property {propName} on {componentType.Name}");
+                    // McpLog.Warn($"Could not read property {propName} on {componentType.Name}");
                 }
             }
 
             // --- Add Logging Before Field Loop ---
-            // Debug.Log($"[GetComponentData] Starting field loop for {componentType.Name}...");
+            // McpLog.Info($"[GetComponentData] Starting field loop for {componentType.Name}...");
             // --- End Logging Before Field Loop ---
 
             // Use cached fields
@@ -406,7 +521,7 @@ namespace MCPForUnity.Editor.Helpers
                 try
                 {
                     // --- Add detailed logging for fields --- 
-                    // Debug.Log($"[GetComponentData] Accessing Field: {componentType.Name}.{fieldInfo.Name}");
+                    // McpLog.Info($"[GetComponentData] Accessing Field: {componentType.Name}.{fieldInfo.Name}");
                     // --- End detailed logging for fields ---
                     object value = fieldInfo.GetValue(c);
                     string fieldName = fieldInfo.Name;
@@ -415,7 +530,7 @@ namespace MCPForUnity.Editor.Helpers
                 }
                 catch (Exception)
                 {
-                    // Debug.LogWarning($"Could not read field {fieldInfo.Name} on {componentType.Name}");
+                    // McpLog.Warn($"Could not read field {fieldInfo.Name} on {componentType.Name}");
                 }
             }
             // --- End Use cached metadata ---
@@ -452,7 +567,7 @@ namespace MCPForUnity.Editor.Helpers
             catch (Exception e)
             {
                 // Catch potential errors during JToken conversion or addition to dictionary
-                Debug.LogWarning($"[AddSerializableValue] Error processing value for '{name}' (Type: {type.FullName}): {e.Message}. Skipping.");
+                McpLog.Warn($"[AddSerializableValue] Error processing value for '{name}' (Type: {type.FullName}): {e.Message}. Skipping.");
             }
         }
 
@@ -508,7 +623,7 @@ namespace MCPForUnity.Editor.Helpers
                     {
                         return jValue.Value;
                     }
-                    // Debug.LogWarning($"Unsupported JTokenType encountered: {token.Type}. Returning null.");
+                    // McpLog.Warn($"Unsupported JTokenType encountered: {token.Type}. Returning null.");
                     return null;
             }
         }
@@ -524,6 +639,7 @@ namespace MCPForUnity.Editor.Helpers
                 new ColorConverter(),
                 new RectConverter(),
                 new BoundsConverter(),
+                new Matrix4x4Converter(), // Fix #478: Safe Matrix4x4 serialization for Cinemachine
                 new UnityEngineObjectConverter() // Handles serialization of references
             },
             ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
@@ -544,12 +660,12 @@ namespace MCPForUnity.Editor.Helpers
             }
             catch (JsonSerializationException e)
             {
-                Debug.LogWarning($"[GameObjectSerializer] Newtonsoft.Json Error serializing value of type {type.FullName}: {e.Message}. Skipping property/field.");
+                McpLog.Warn($"[GameObjectSerializer] Newtonsoft.Json Error serializing value of type {type.FullName}: {e.Message}. Skipping property/field.");
                 return null; // Indicate serialization failure
             }
             catch (Exception e) // Catch other unexpected errors
             {
-                Debug.LogWarning($"[GameObjectSerializer] Unexpected error serializing value of type {type.FullName}: {e}. Skipping property/field.");
+                McpLog.Warn($"[GameObjectSerializer] Unexpected error serializing value of type {type.FullName}: {e}. Skipping property/field.");
                 return null; // Indicate serialization failure
             }
         }

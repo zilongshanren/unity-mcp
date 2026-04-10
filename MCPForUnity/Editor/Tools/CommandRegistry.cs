@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using MCPForUnity.Editor.Helpers;
 using MCPForUnity.Editor.Resources;
@@ -51,18 +50,7 @@ namespace MCPForUnity.Editor.Tools
             _initialized = true;
         }
 
-        /// <summary>
-        /// Convert PascalCase or camelCase to snake_case
-        /// </summary>
-        private static string ToSnakeCase(string name)
-        {
-            if (string.IsNullOrEmpty(name)) return name;
-
-            // Insert underscore before uppercase letters (except first)
-            var s1 = Regex.Replace(name, "(.)([A-Z][a-z]+)", "$1_$2");
-            var s2 = Regex.Replace(s1, "([a-z0-9])([A-Z])", "$1_$2");
-            return s2.ToLower();
-        }
+        private static string ToSnakeCase(string name) => StringCaseUtility.ToSnakeCase(name);
 
         /// <summary>
         /// Auto-discover all types with [McpForUnityTool] or [McpForUnityResource] attributes
@@ -98,7 +86,7 @@ namespace MCPForUnity.Editor.Tools
                         resourceCount++;
                 }
 
-                McpLog.Info($"Auto-discovered {toolCount} tools and {resourceCount} resources ({_handlers.Count} total handlers)");
+                McpLog.Info($"Auto-discovered {toolCount} tools and {resourceCount} resources ({_handlers.Count} total handlers)", false);
             }
             catch (Exception ex)
             {
@@ -246,6 +234,36 @@ namespace MCPForUnity.Editor.Tools
             }
 
             return handlerInfo.SyncHandler(@params);
+        }
+
+        /// <summary>
+        /// Execute a command handler and return its raw result, regardless of sync or async implementation.
+        /// Used internally for features like batch execution where commands need to be composed.
+        /// </summary>
+        /// <param name="commandName">The registered command to execute.</param>
+        /// <param name="params">Parameters to pass to the command (optional).</param>
+        public static Task<object> InvokeCommandAsync(string commandName, JObject @params)
+        {
+            var handlerInfo = GetHandlerInfo(commandName);
+            var payload = @params ?? new JObject();
+
+            if (handlerInfo.IsAsync)
+            {
+                if (handlerInfo.AsyncHandler == null)
+                {
+                    throw new InvalidOperationException($"Async handler for '{commandName}' is not configured correctly");
+                }
+
+                return handlerInfo.AsyncHandler(payload);
+            }
+
+            if (handlerInfo.SyncHandler == null)
+            {
+                throw new InvalidOperationException($"Handler for '{commandName}' does not provide a synchronous implementation");
+            }
+
+            object result = handlerInfo.SyncHandler(payload);
+            return Task.FromResult(result);
         }
 
         /// <summary>

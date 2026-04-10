@@ -33,23 +33,56 @@ class DummyContext:
 
         self.request_context = _RequestContext(self._meta)
 
-    def info(self, message):
+    async def info(self, message):
         self.log_info.append(message)
 
-    def warning(self, message):
+    async def warning(self, message):
         self.log_warning.append(message)
 
     # Some code paths call warn(); treat it as an alias of warning()
-    def warn(self, message):
-        self.warning(message)
+    async def warn(self, message):
+        await self.warning(message)
 
-    def error(self, message):
+    async def error(self, message):
         self.log_error.append(message)
 
-    def set_state(self, key, value):
+    async def set_state(self, key, value):
         """Set state value (mimics FastMCP context.set_state)"""
         self._state[key] = value
 
-    def get_state(self, key, default=None):
+    async def get_state(self, key, default=None):
         """Get state value (mimics FastMCP context.get_state)"""
         return self._state.get(key, default)
+
+
+class DummyMCP:
+    """Mock MCP server for testing tool registration patterns."""
+
+    def __init__(self):
+        self.tools = {}
+
+    def tool(self, *args, **kwargs):
+        def deco(fn):
+            self.tools[fn.__name__] = fn
+            return fn
+        return deco
+
+
+def setup_script_tools():
+    """
+    Setup script-related tools for testing.
+
+    Returns a dict mapping tool names to their async handler functions.
+    Useful for testing parameter serialization and SDK behavior.
+    """
+    mcp = DummyMCP()
+    # Import tools to trigger decorator-based registration
+    import services.tools.manage_script
+    from services.registry import get_registered_tools
+
+    for tool_info in get_registered_tools():
+        name = tool_info['name']
+        if any(k in name for k in ['script', 'apply_text', 'create_script',
+                                    'delete_script', 'validate_script', 'get_sha']):
+            mcp.tools[name] = tool_info['func']
+    return mcp.tools

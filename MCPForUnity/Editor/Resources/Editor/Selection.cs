@@ -21,7 +21,7 @@ namespace MCPForUnity.Editor.Resources.Editor
                     activeObject = UnityEditor.Selection.activeObject?.name,
                     activeGameObject = UnityEditor.Selection.activeGameObject?.name,
                     activeTransform = UnityEditor.Selection.activeTransform?.name,
-                    activeInstanceID = UnityEditor.Selection.activeInstanceID,
+                    activeInstanceID = UnityEditor.Selection.activeObject?.GetInstanceID() ?? 0,
                     count = UnityEditor.Selection.count,
                     objects = UnityEditor.Selection.objects
                         .Select(obj => new
@@ -41,11 +41,11 @@ namespace MCPForUnity.Editor.Resources.Editor
                     assetGUIDs = UnityEditor.Selection.assetGUIDs
                 };
 
-                return Response.Success("Retrieved current selection details.", selectionInfo);
+                return new SuccessResponse("Retrieved current selection details.", selectionInfo);
             }
             catch (Exception e)
             {
-                return Response.Error($"Error getting selection: {e.Message}");
+                return new ErrorResponse($"Error getting selection: {e.Message}");
             }
         }
     }

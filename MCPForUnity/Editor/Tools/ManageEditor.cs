@@ -1,8 +1,10 @@
 using System;
+using MCPForUnity.Editor.Helpers;
+using MCPForUnity.Editor.Services;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEditorInternal; // Required for tag management
-using MCPForUnity.Editor.Helpers;
+using UnityEngine;
 
 namespace MCPForUnity.Editor.Tools
 {
@@ -10,7 +12,7 @@ namespace MCPForUnity.Editor.Tools
     /// Handles editor control actions including play mode control, tool selection,
     /// and tag/layer management. For reading editor state, use MCP resources instead.
     /// </summary>
-    [McpForUnityTool("manage_editor")]
+    [McpForUnityTool("manage_editor", AutoRegister = false)]
     public static class ManageEditor
     {
         // Constant for starting user layer index
@@ -24,17 +26,26 @@ namespace MCPForUnity.Editor.Tools
         /// </summary>
         public static object HandleCommand(JObject @params)
         {
-            string action = @params["action"]?.ToString().ToLower();
-            // Parameters for specific actions
-            string tagName = @params["tagName"]?.ToString();
-            string layerName = @params["layerName"]?.ToString();
-            bool waitForCompletion = @params["waitForCompletion"]?.ToObject<bool>() ?? false; // Example - not used everywhere
-
-            if (string.IsNullOrEmpty(action))
+            // Step 1: Null parameter guard (consistent across all tools)
+            if (@params == null)
             {
-                return Response.Error("Action parameter is required.");
+                return new ErrorResponse("Parameters cannot be null.");
             }
 
+            // Step 2: Wrap parameters
+            var p = new ToolParams(@params);
+
+            // Step 3: Extract and validate required parameters
+            var actionResult = p.GetRequired("action");
+            if (!actionResult.IsSuccess)
+            {
+                return new ErrorResponse(actionResult.ErrorMessage);
+            }
+            string action = actionResult.Value.ToLowerInvariant();
+
+            // Parameters for specific actions
+            string tagName = p.Get("tagName");
+            string layerName = p.Get("layerName");
             // Route action
             switch (action)
             {
@@ -45,13 +56,13 @@ namespace MCPForUnity.Editor.Tools
                         if (!EditorApplication.isPlaying)
                         {
                             EditorApplication.isPlaying = true;
-                            return Response.Success("Entered play mode.");
+                            return new SuccessResponse("Entered play mode.");
                         }
-                        return Response.Success("Already in play mode.");
+                        return new SuccessResponse("Already in play mode.");
                     }
                     catch (Exception e)
                     {
-                        return Response.Error($"Error entering play mode: {e.Message}");
+                        return new ErrorResponse($"Error entering play mode: {e.Message}");
                     }
                 case "pause":
                     try
@@ -59,15 +70,15 @@ namespace MCPForUnity.Editor.Tools
                         if (EditorApplication.isPlaying)
                         {
                             EditorApplication.isPaused = !EditorApplication.isPaused;
-                            return Response.Success(
+                            return new SuccessResponse(
                                 EditorApplication.isPaused ? "Game paused." : "Game resumed."
                             );
                         }
-                        return Response.Error("Cannot pause/resume: Not in play mode.");
+                        return new ErrorResponse("Cannot pause/resume: Not in play mode.");
                     }
                     catch (Exception e)
                     {
-                        return Response.Error($"Error pausing/resuming game: {e.Message}");
+                        return new ErrorResponse($"Error pausing/resuming game: {e.Message}");
                     }
                 case "stop":
                     try
@@ -75,53 +86,92 @@ namespace MCPForUnity.Editor.Tools
                         if (EditorApplication.isPlaying)
                         {
                             EditorApplication.isPlaying = false;
-                            return Response.Success("Exited play mode.");
+                            return new SuccessResponse("Exited play mode.");
                         }
-                        return Response.Success("Already stopped (not in play mode).");
+                        return new SuccessResponse("Already stopped (not in play mode).");
                     }
                     catch (Exception e)
                     {
-                        return Response.Error($"Error stopping play mode: {e.Message}");
+                        return new ErrorResponse($"Error stopping play mode: {e.Message}");
                     }
 
                 // Tool Control
                 case "set_active_tool":
-                    string toolName = @params["toolName"]?.ToString();
-                    if (string.IsNullOrEmpty(toolName))
-                        return Response.Error("'toolName' parameter required for set_active_tool.");
-                    return SetActiveTool(toolName);
+                    var toolNameResult = p.GetRequired("toolName", "'toolName' parameter required for set_active_tool.");
+                    if (!toolNameResult.IsSuccess)
+                        return new ErrorResponse(toolNameResult.ErrorMessage);
+                    return SetActiveTool(toolNameResult.Value);
 
                 // Tag Management
                 case "add_tag":
-                    if (string.IsNullOrEmpty(tagName))
-                        return Response.Error("'tagName' parameter required for add_tag.");
-                    return AddTag(tagName);
+                    var addTagResult = p.GetRequired("tagName", "'tagName' parameter required for add_tag.");
+                    if (!addTagResult.IsSuccess)
+                        return new ErrorResponse(addTagResult.ErrorMessage);
+                    return AddTag(addTagResult.Value);
                 case "remove_tag":
-                    if (string.IsNullOrEmpty(tagName))
-                        return Response.Error("'tagName' parameter required for remove_tag.");
-                    return RemoveTag(tagName);
+                    var removeTagResult = p.GetRequired("tagName", "'tagName' parameter required for remove_tag.");
+                    if (!removeTagResult.IsSuccess)
+                        return new ErrorResponse(removeTagResult.ErrorMessage);
+                    return RemoveTag(removeTagResult.Value);
                 // Layer Management
                 case "add_layer":
-                    if (string.IsNullOrEmpty(layerName))
-                        return Response.Error("'layerName' parameter required for add_layer.");
-                    return AddLayer(layerName);
+                    var addLayerResult = p.GetRequired("layerName", "'layerName' parameter required for add_layer.");
+                    if (!addLayerResult.IsSuccess)
+                        return new ErrorResponse(addLayerResult.ErrorMessage);
+                    return AddLayer(addLayerResult.Value);
                 case "remove_layer":
-                    if (string.IsNullOrEmpty(layerName))
-                        return Response.Error("'layerName' parameter required for remove_layer.");
-                    return RemoveLayer(layerName);
+                    var removeLayerResult = p.GetRequired("layerName", "'layerName' parameter required for remove_layer.");
+                    if (!removeLayerResult.IsSuccess)
+                        return new ErrorResponse(removeLayerResult.ErrorMessage);
+                    return RemoveLayer(removeLayerResult.Value);
                 // --- Settings (Example) ---
                 // case "set_resolution":
                 //     int? width = @params["width"]?.ToObject<int?>();
                 //     int? height = @params["height"]?.ToObject<int?>();
-                //     if (!width.HasValue || !height.HasValue) return Response.Error("'width' and 'height' parameters required.");
+                //     if (!width.HasValue || !height.HasValue) return new ErrorResponse("'width' and 'height' parameters required.");
                 //     return SetGameViewResolution(width.Value, height.Value);
                 // case "set_quality":
                 //     // Handle string name or int index
                 //     return SetQualityLevel(@params["qualityLevel"]);
 
+                // Package Deployment
+                case "deploy_package":
+                    return DeployPackage();
+                case "restore_package":
+                    return RestorePackage();
+
+                // Undo/Redo
+                case "undo":
+                {
+                    string groupName = Undo.GetCurrentGroupName();
+                    Undo.PerformUndo();
+                    string message = string.IsNullOrEmpty(groupName)
+                        ? "Undo performed (stack may be empty)."
+                        : $"Undid: {groupName}";
+                    if (EditorApplication.isPlaying)
+                        message += " Warning: undo during play mode may have unexpected effects.";
+                    return new SuccessResponse(message, new
+                    {
+                        undone_group = string.IsNullOrEmpty(groupName) ? (string)null : groupName,
+                        next_group = Undo.GetCurrentGroupName()
+                    });
+                }
+                case "redo":
+                {
+                    Undo.PerformRedo();
+                    string nextGroup = Undo.GetCurrentGroupName();
+                    string message = "Redo performed.";
+                    if (EditorApplication.isPlaying)
+                        message += " Warning: redo during play mode may have unexpected effects.";
+                    return new SuccessResponse(message, new
+                    {
+                        current_group = string.IsNullOrEmpty(nextGroup) ? (string)null : nextGroup
+                    });
+                }
+
                 default:
-                    return Response.Error(
-                        $"Unknown action: '{action}'. Supported actions: play, pause, stop, set_active_tool, add_tag, remove_tag, add_layer, remove_layer. Use MCP resources for reading editor state, project info, tags, layers, selection, windows, prefab stage, and active tool."
+                    return new ErrorResponse(
+                        $"Unknown action: '{action}'. Supported actions: play, pause, stop, set_active_tool, add_tag, remove_tag, add_layer, remove_layer, deploy_package, restore_package, undo, redo. For prefab editing (open/save/close prefab stage), use manage_prefabs. Use MCP resources for reading editor state, project info, tags, layers, selection, windows, prefab stage, and active tool."
                     );
             }
         }
@@ -139,11 +189,11 @@ namespace MCPForUnity.Editor.Tools
                     if (targetTool != Tool.None && targetTool <= Tool.Custom) // Tool.Custom is the last standard tool
                     {
                         UnityEditor.Tools.current = targetTool;
-                        return Response.Success($"Set active tool to '{targetTool}'.");
+                        return new SuccessResponse($"Set active tool to '{targetTool}'.");
                     }
                     else
                     {
-                        return Response.Error(
+                        return new ErrorResponse(
                             $"Cannot directly set tool to '{toolName}'. It might be None, Custom, or invalid."
                         );
                     }
@@ -152,14 +202,14 @@ namespace MCPForUnity.Editor.Tools
                 {
                     // Potentially try activating a custom tool by name here if needed
                     // This often requires specific editor scripting knowledge for that tool.
-                    return Response.Error(
+                    return new ErrorResponse(
                         $"Could not parse '{toolName}' as a standard Unity Tool (View, Move, Rotate, Scale, Rect, Transform, Custom)."
                     );
                 }
             }
             catch (Exception e)
             {
-                return Response.Error($"Error setting active tool: {e.Message}");
+                return new ErrorResponse($"Error setting active tool: {e.Message}");
             }
         }
 
@@ -168,12 +218,12 @@ namespace MCPForUnity.Editor.Tools
         private static object AddTag(string tagName)
         {
             if (string.IsNullOrWhiteSpace(tagName))
-                return Response.Error("Tag name cannot be empty or whitespace.");
+                return new ErrorResponse("Tag name cannot be empty or whitespace.");
 
             // Check if tag already exists
             if (System.Linq.Enumerable.Contains(InternalEditorUtility.tags, tagName))
             {
-                return Response.Error($"Tag '{tagName}' already exists.");
+                return new ErrorResponse($"Tag '{tagName}' already exists.");
             }
 
             try
@@ -182,25 +232,25 @@ namespace MCPForUnity.Editor.Tools
                 InternalEditorUtility.AddTag(tagName);
                 // Force save assets to ensure the change persists in the TagManager asset
                 AssetDatabase.SaveAssets();
-                return Response.Success($"Tag '{tagName}' added successfully.");
+                return new SuccessResponse($"Tag '{tagName}' added successfully.");
             }
             catch (Exception e)
             {
-                return Response.Error($"Failed to add tag '{tagName}': {e.Message}");
+                return new ErrorResponse($"Failed to add tag '{tagName}': {e.Message}");
             }
         }
 
         private static object RemoveTag(string tagName)
         {
             if (string.IsNullOrWhiteSpace(tagName))
-                return Response.Error("Tag name cannot be empty or whitespace.");
+                return new ErrorResponse("Tag name cannot be empty or whitespace.");
             if (tagName.Equals("Untagged", StringComparison.OrdinalIgnoreCase))
-                return Response.Error("Cannot remove the built-in 'Untagged' tag.");
+                return new ErrorResponse("Cannot remove the built-in 'Untagged' tag.");
 
             // Check if tag exists before attempting removal
             if (!System.Linq.Enumerable.Contains(InternalEditorUtility.tags, tagName))
             {
-                return Response.Error($"Tag '{tagName}' does not exist.");
+                return new ErrorResponse($"Tag '{tagName}' does not exist.");
             }
 
             try
@@ -209,12 +259,12 @@ namespace MCPForUnity.Editor.Tools
                 InternalEditorUtility.RemoveTag(tagName);
                 // Force save assets
                 AssetDatabase.SaveAssets();
-                return Response.Success($"Tag '{tagName}' removed successfully.");
+                return new SuccessResponse($"Tag '{tagName}' removed successfully.");
             }
             catch (Exception e)
             {
                 // Catch potential issues if the tag is somehow in use or removal fails
-                return Response.Error($"Failed to remove tag '{tagName}': {e.Message}");
+                return new ErrorResponse($"Failed to remove tag '{tagName}': {e.Message}");
             }
         }
 
@@ -223,16 +273,16 @@ namespace MCPForUnity.Editor.Tools
         private static object AddLayer(string layerName)
         {
             if (string.IsNullOrWhiteSpace(layerName))
-                return Response.Error("Layer name cannot be empty or whitespace.");
+                return new ErrorResponse("Layer name cannot be empty or whitespace.");
 
             // Access the TagManager asset
             SerializedObject tagManager = GetTagManager();
             if (tagManager == null)
-                return Response.Error("Could not access TagManager asset.");
+                return new ErrorResponse("Could not access TagManager asset.");
 
             SerializedProperty layersProp = tagManager.FindProperty("layers");
             if (layersProp == null || !layersProp.isArray)
-                return Response.Error("Could not find 'layers' property in TagManager.");
+                return new ErrorResponse("Could not find 'layers' property in TagManager.");
 
             // Check if layer name already exists (case-insensitive check recommended)
             for (int i = 0; i < TotalLayerCount; i++)
@@ -243,7 +293,7 @@ namespace MCPForUnity.Editor.Tools
                     && layerName.Equals(layerSP.stringValue, StringComparison.OrdinalIgnoreCase)
                 )
                 {
-                    return Response.Error($"Layer '{layerName}' already exists at index {i}.");
+                    return new ErrorResponse($"Layer '{layerName}' already exists at index {i}.");
                 }
             }
 
@@ -261,7 +311,7 @@ namespace MCPForUnity.Editor.Tools
 
             if (firstEmptyUserLayer == -1)
             {
-                return Response.Error("No empty User Layer slots available (8-31 are full).");
+                return new ErrorResponse("No empty User Layer slots available (8-31 are full).");
             }
 
             // Assign the name to the found slot
@@ -275,29 +325,29 @@ namespace MCPForUnity.Editor.Tools
                 tagManager.ApplyModifiedProperties();
                 // Save assets to make sure it's written to disk
                 AssetDatabase.SaveAssets();
-                return Response.Success(
+                return new SuccessResponse(
                     $"Layer '{layerName}' added successfully to slot {firstEmptyUserLayer}."
                 );
             }
             catch (Exception e)
             {
-                return Response.Error($"Failed to add layer '{layerName}': {e.Message}");
+                return new ErrorResponse($"Failed to add layer '{layerName}': {e.Message}");
             }
         }
 
         private static object RemoveLayer(string layerName)
         {
             if (string.IsNullOrWhiteSpace(layerName))
-                return Response.Error("Layer name cannot be empty or whitespace.");
+                return new ErrorResponse("Layer name cannot be empty or whitespace.");
 
             // Access the TagManager asset
             SerializedObject tagManager = GetTagManager();
             if (tagManager == null)
-                return Response.Error("Could not access TagManager asset.");
+                return new ErrorResponse("Could not access TagManager asset.");
 
             SerializedProperty layersProp = tagManager.FindProperty("layers");
             if (layersProp == null || !layersProp.isArray)
-                return Response.Error("Could not find 'layers' property in TagManager.");
+                return new ErrorResponse("Could not find 'layers' property in TagManager.");
 
             // Find the layer by name (must be user layer)
             int layerIndexToRemove = -1;
@@ -317,7 +367,7 @@ namespace MCPForUnity.Editor.Tools
 
             if (layerIndexToRemove == -1)
             {
-                return Response.Error($"User layer '{layerName}' not found.");
+                return new ErrorResponse($"User layer '{layerName}' not found.");
             }
 
             // Clear the name for that index
@@ -331,13 +381,56 @@ namespace MCPForUnity.Editor.Tools
                 tagManager.ApplyModifiedProperties();
                 // Save assets
                 AssetDatabase.SaveAssets();
-                return Response.Success(
+                return new SuccessResponse(
                     $"Layer '{layerName}' (slot {layerIndexToRemove}) removed successfully."
                 );
             }
             catch (Exception e)
             {
-                return Response.Error($"Failed to remove layer '{layerName}': {e.Message}");
+                return new ErrorResponse($"Failed to remove layer '{layerName}': {e.Message}");
+            }
+        }
+
+        // --- Package Deployment Methods ---
+
+        private static object DeployPackage()
+        {
+            try
+            {
+                var result = MCPServiceLocator.Deployment.DeployFromStoredSource();
+                if (!result.Success)
+                    return new ErrorResponse(result.Message);
+
+                return new SuccessResponse(result.Message, new
+                {
+                    source_path = result.SourcePath,
+                    target_path = result.TargetPath,
+                    backup_path = result.BackupPath
+                });
+            }
+            catch (Exception e)
+            {
+                return new ErrorResponse($"Deploy failed: {e.Message}");
+            }
+        }
+
+        private static object RestorePackage()
+        {
+            try
+            {
+                var result = MCPServiceLocator.Deployment.RestoreLastBackup();
+                if (!result.Success)
+                    return new ErrorResponse(result.Message);
+
+                return new SuccessResponse(result.Message, new
+                {
+                    target_path = result.TargetPath,
+                    backup_path = result.BackupPath
+                });
+            }
+            catch (Exception e)
+            {
+                return new ErrorResponse($"Restore failed: {e.Message}");
             }
         }
 
